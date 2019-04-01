@@ -15,6 +15,7 @@ import (
 )
 
 const defaultBufSize = 4096
+const tinyBufferSize = 64
 
 // A buffer which is used for both reading and writing.
 // This is possible since communication on each connection is synchronous.
@@ -23,6 +24,8 @@ const defaultBufSize = 4096
 // Also highly optimized for this particular use case.
 type buffer struct {
 	buf     []byte // buf is a byte buffer who's length and capacity are equal.
+	large   []byte
+	safe    []byte
 	nc      net.Conn
 	idx     int
 	length  int
@@ -31,24 +34,76 @@ type buffer struct {
 
 // newBuffer allocates and returns a new buffer.
 func newBuffer(nc net.Conn) buffer {
+	buf := make([]byte, defaultBufSize)
 	return buffer{
-		buf: make([]byte, defaultBufSize),
-		nc:  nc,
+		buf:   buf,
+		large: buf,
+		safe:  make([]byte, tinyBufferSize),
+		nc:    nc,
 	}
 }
 
+var scratchBuffer [4096]byte
+
+func (b *buffer) skip(need int) error {
+	if b.length >= need {
+		b.idx += need
+		b.length -= need
+		return nil
+	}
+
+	need -= b.length
+	b.idx += b.length
+	b.length = 0
+
+	for need > 0 {
+		r := need
+		if r > len(scratchBuffer) {
+			r = len(scratchBuffer)
+		}
+		nn, err := b.read(scratchBuffer[:r])
+		need -= nn
+
+		switch err {
+		case nil:
+			continue
+		case io.EOF:
+			if need == 0 {
+				return nil
+			}
+			return io.ErrUnexpectedEOF
+		default:
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *buffer) read(out []byte) (int, error) {
+	if b.timeout > 0 {
+		if err := b.nc.SetReadDeadline(time.Now().Add(b.timeout)); err != nil {
+			return 0, err
+		}
+	}
+	return b.nc.Read(out)
+}
+
 // fill reads into the buffer until at least _need_ bytes are in it
-func (b *buffer) fill(need int) error {
+func (b *buffer) fill(need int, safe bool) error {
 	n := b.length
 
-	// move existing data to the beginning
-	if n > 0 && b.idx > 0 {
-		copy(b.buf[0:n], b.buf[b.idx:])
+	if safe {
+		copy(b.safe[0:n], b.buf[b.idx:])
+		b.buf = b.safe
+	} else {
+		// move existing data to the beginning
+		if n > 0 && b.idx > 0 {
+			copy(b.large[0:n], b.buf[b.idx:])
+		}
+		b.buf = b.large
 	}
 
 	// grow buffer if necessary
-	// TODO: let the buffer shrink again at some point
-	//       Maybe keep the org buf slice and swap back?
 	if need > len(b.buf) {
 		// Round up to the next multiple of the default size
 		newBuf := make([]byte, ((need/defaultBufSize)+1)*defaultBufSize)
@@ -59,13 +114,7 @@ func (b *buffer) fill(need int) error {
 	b.idx = 0
 
 	for {
-		if b.timeout > 0 {
-			if err := b.nc.SetReadDeadline(time.Now().Add(b.timeout)); err != nil {
-				return err
-			}
-		}
-
-		nn, err := b.nc.Read(b.buf[n:])
+		nn, err := b.read(b.buf[n:])
 		n += nn
 
 		switch err {
@@ -89,12 +138,22 @@ func (b *buffer) fill(need int) error {
 	}
 }
 
+func (b *buffer) peekByte(safe bool) (byte, error) {
+	if b.length < 1 {
+		// refill
+		if err := b.fill(1, safe); err != nil {
+			return 0, err
+		}
+	}
+	return b.buf[b.idx], nil
+}
+
 // returns next N bytes from buffer.
 // The returned slice is only guaranteed to be valid until the next read
-func (b *buffer) readNext(need int) ([]byte, error) {
+func (b *buffer) readNext(need int, safe bool) ([]byte, error) {
 	if b.length < need {
 		// refill
-		if err := b.fill(need); err != nil {
+		if err := b.fill(need, safe); err != nil {
 			return nil, err
 		}
 	}
@@ -113,6 +172,9 @@ func (b *buffer) takeBuffer(length int) ([]byte, error) {
 	if b.length > 0 {
 		return nil, ErrBusyBuffer
 	}
+
+	// restore original buffer if it's been resized or replaced
+	b.buf = b.large
 
 	// test (cheap) general case first
 	if length <= cap(b.buf) {
@@ -135,6 +197,8 @@ func (b *buffer) takeSmallBuffer(length int) ([]byte, error) {
 	if b.length > 0 {
 		return nil, ErrBusyBuffer
 	}
+	// restore original buffer if it's been resized or replaced
+	b.buf = b.large
 	return b.buf[:length], nil
 }
 
@@ -146,6 +210,8 @@ func (b *buffer) takeCompleteBuffer() ([]byte, error) {
 	if b.length > 0 {
 		return nil, ErrBusyBuffer
 	}
+	// restore original buffer if it's been resized or replaced
+	b.buf = b.large
 	return b.buf, nil
 }
 

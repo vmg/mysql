@@ -1,4 +1,4 @@
-// Go MySQL Driver - A MySQL-Driver for Go's database/sql package
+// Go MySQL Driver - A MySQL-Driver for Go's database/sql paage
 //
 // Copyright 2016 The Go-MySQL-Driver Authors. All rights reserved.
 //
