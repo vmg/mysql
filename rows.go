@@ -153,7 +153,7 @@ func (rows *mysqlRows) nextResultSet() (int, error) {
 		return 0, io.EOF
 	}
 	rows.rs = resultSet{}
-	return rows.mc.readResultSetHeaderPacket()
+	return rows.mc.readResultSetHeaderPacket(false)
 }
 
 func (rows *mysqlRows) nextNotEmptyResultSet() (int, error) {

@@ -47,6 +47,8 @@ func (mc *mysqlConn) checkCancel(err error) error {
 	return ErrInvalidConn
 }
 
+// skipPacket reads and discards a whole packet from the wire, unless the
+// packet is an ERROR or EOF packet, in which case it is returned
 func (mc *mysqlConn) skipPacket() ([]byte, error) {
 	var prevData bool
 
@@ -102,16 +104,16 @@ func (mc *mysqlConn) skipPacket() ([]byte, error) {
 	}
 }
 
+// Read packet to buffer 'data'
 func (mc *mysqlConn) readPacket() ([]byte, error) {
-	return mc.readPacket1(false)
+	return mc.readOrDiscardPacket(false)
 }
 
-// Read packet to buffer 'data'
-func (mc *mysqlConn) readPacket1(safe bool) ([]byte, error) {
+func (mc *mysqlConn) readOrDiscardPacket(discard bool) ([]byte, error) {
 	var prevData []byte
 	for {
 		// read packet header
-		data, err := mc.buf.readNext(4, safe)
+		data, err := mc.buf.readNext(4, discard)
 		if err != nil {
 			return nil, mc.checkCancel(err)
 		}
@@ -135,7 +137,7 @@ func (mc *mysqlConn) readPacket1(safe bool) ([]byte, error) {
 		}
 
 		// read packet body [pktLen bytes]
-		data, err = mc.buf.readNext(pktLen, safe)
+		data, err = mc.buf.readNext(pktLen, discard)
 		if err != nil {
 			return nil, mc.checkCancel(err)
 		}
@@ -587,14 +589,10 @@ func (mc *mysqlConn) readResultOK() error {
 	return mc.handleErrorPacket(data)
 }
 
-func (mc *mysqlConn) readResultSetHeaderPacket() (int, error) {
-	return mc.readResultSetHeaderPacket1(false)
-}
-
 // Result Set Header Packet
 // http://dev.mysql.com/doc/internals/en/com-query-response.html#packet-ProtocolText::Resultset
-func (mc *mysqlConn) readResultSetHeaderPacket1(safe bool) (int, error) {
-	data, err := mc.readPacket1(safe)
+func (mc *mysqlConn) readResultSetHeaderPacket(discard bool) (int, error) {
+	data, err := mc.readOrDiscardPacket(discard)
 	if err == nil {
 		switch data[0] {
 
@@ -1191,7 +1189,7 @@ func (stmt *mysqlStmt) writeExecutePacket(args []driver.Value) error {
 
 func (mc *mysqlConn) discardResults() error {
 	for mc.status&statusMoreResultsExists != 0 {
-		resLen, err := mc.readResultSetHeaderPacket1(true)
+		resLen, err := mc.readResultSetHeaderPacket(true)
 		if err != nil {
 			return err
 		}

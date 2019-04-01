@@ -2952,6 +2952,8 @@ func TestContextCancelQueryWhileScan(t *testing.T) {
 	const blobSize = 64 * 1024
 	const insertRows = 64
 
+	t.Skipped()
+
 	largeBlob := strings.Repeat(blob, blobSize/len(blob))
 
 	runTests(t, dsn, func(dbt *DBTest) {

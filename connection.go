@@ -337,7 +337,7 @@ func (mc *mysqlConn) exec(query string) error {
 	}
 
 	// Read Result
-	resLen, err := mc.readResultSetHeaderPacket()
+	resLen, err := mc.readResultSetHeaderPacket(false)
 	if err != nil {
 		return err
 	}
@@ -382,7 +382,7 @@ func (mc *mysqlConn) query(query string, args []driver.Value) (*textRows, error)
 	if err == nil {
 		// Read Result
 		var resLen int
-		resLen, err = mc.readResultSetHeaderPacket()
+		resLen, err = mc.readResultSetHeaderPacket(false)
 		if err == nil {
 			rows := new(textRows)
 			rows.mc = mc
@@ -415,7 +415,7 @@ func (mc *mysqlConn) getSystemVar(name string) ([]byte, error) {
 	}
 
 	// Read Result
-	resLen, err := mc.readResultSetHeaderPacket()
+	resLen, err := mc.readResultSetHeaderPacket(false)
 	if err == nil {
 		rows := new(textRows)
 		rows.mc = mc

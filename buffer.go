@@ -25,7 +25,7 @@ const tinyBufferSize = 64
 type buffer struct {
 	buf     []byte // buf is a byte buffer who's length and capacity are equal.
 	large   []byte
-	safe    []byte
+	discard []byte
 	nc      net.Conn
 	idx     int
 	length  int
@@ -36,10 +36,10 @@ type buffer struct {
 func newBuffer(nc net.Conn) buffer {
 	buf := make([]byte, defaultBufSize)
 	return buffer{
-		buf:   buf,
-		large: buf,
-		safe:  make([]byte, tinyBufferSize),
-		nc:    nc,
+		buf:     buf,
+		large:   buf,
+		discard: make([]byte, tinyBufferSize),
+		nc:      nc,
 	}
 }
 
@@ -89,28 +89,25 @@ func (b *buffer) read(out []byte) (int, error) {
 }
 
 // fill reads into the buffer until at least _need_ bytes are in it
-func (b *buffer) fill(need int, safe bool) error {
+func (b *buffer) fill(need int, discard bool) error {
 	n := b.length
+	newBuf := b.large
 
-	if safe {
-		copy(b.safe[0:n], b.buf[b.idx:])
-		b.buf = b.safe
-	} else {
-		// move existing data to the beginning
-		if n > 0 && b.idx > 0 {
-			copy(b.large[0:n], b.buf[b.idx:])
-		}
-		b.buf = b.large
+	if discard {
+		newBuf = b.discard
 	}
 
 	// grow buffer if necessary
-	if need > len(b.buf) {
+	if need > len(newBuf) {
 		// Round up to the next multiple of the default size
-		newBuf := make([]byte, ((need/defaultBufSize)+1)*defaultBufSize)
-		copy(newBuf, b.buf)
-		b.buf = newBuf
+		newBuf = make([]byte, ((need/defaultBufSize)+1)*defaultBufSize)
 	}
 
+	if n > 0 {
+		copy(newBuf[0:n], b.buf[b.idx:])
+	}
+
+	b.buf = newBuf
 	b.idx = 0
 
 	for {
@@ -138,10 +135,10 @@ func (b *buffer) fill(need int, safe bool) error {
 	}
 }
 
-func (b *buffer) peekByte(safe bool) (byte, error) {
+func (b *buffer) peekByte(discard bool) (byte, error) {
 	if b.length < 1 {
 		// refill
-		if err := b.fill(1, safe); err != nil {
+		if err := b.fill(1, discard); err != nil {
 			return 0, err
 		}
 	}
@@ -150,10 +147,10 @@ func (b *buffer) peekByte(safe bool) (byte, error) {
 
 // returns next N bytes from buffer.
 // The returned slice is only guaranteed to be valid until the next read
-func (b *buffer) readNext(need int, safe bool) ([]byte, error) {
+func (b *buffer) readNext(need int, discard bool) ([]byte, error) {
 	if b.length < need {
 		// refill
-		if err := b.fill(need, safe); err != nil {
+		if err := b.fill(need, discard); err != nil {
 			return nil, err
 		}
 	}
