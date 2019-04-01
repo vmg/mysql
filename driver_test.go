@@ -19,6 +19,7 @@ import (
 	"io/ioutil"
 	"log"
 	"math"
+	"math/rand"
 	"net"
 	"net/url"
 	"os"
@@ -2936,5 +2937,59 @@ func TestValuerWithValueReceiverGivenNilValue(t *testing.T) {
 		dbt.mustExec("CREATE TABLE test (value VARCHAR(255))")
 		dbt.db.Exec("INSERT INTO test VALUES (?)", (*testValuer)(nil))
 		// This test will panic on the INSERT if ConvertValue() does not check for typed nil before calling Value()
+	})
+}
+
+// TestContextCancelQueryWhileScan checks for race conditions that arise when
+// a query context is canceled while a user is calling rows.Scan(). The code
+// is based on database/sql TestIssue18429.
+// See https://github.com/golang/go/issues/23519
+func TestContextCancelQueryWhileScan(t *testing.T) {
+	const blob = "0123456789abcdef"
+	const sqlQuery = `SELECT id, value FROM test WHERE SLEEP(?) = 0`
+	const contextRaceIterations = 1000
+	const milliWait = 30
+	const blobSize = 64 * 1024
+	const insertRows = 64
+
+	largeBlob := strings.Repeat(blob, blobSize/len(blob))
+
+	runTests(t, dsn, func(dbt *DBTest) {
+		dbt.mustExec("CREATE TABLE test (id int, value MEDIUMBLOB) CHARACTER SET utf8")
+		for i := 0; i < insertRows; i++ {
+			dbt.mustExec("INSERT INTO test VALUES (?, ?)", i+1, largeBlob)
+		}
+
+		sem := make(chan bool, 20)
+		var wg sync.WaitGroup
+		for i := 0; i < contextRaceIterations; i++ {
+			sem <- true
+			wg.Add(1)
+			go func() {
+				defer func() {
+					<-sem
+					wg.Done()
+				}()
+				qwait := float64(time.Duration(rand.Intn(milliWait))*time.Millisecond) / float64(time.Second)
+
+				ctx, cancel := context.WithTimeout(context.Background(), time.Duration(rand.Intn(milliWait))*time.Millisecond)
+				defer cancel()
+
+				rows, _ := dbt.db.QueryContext(ctx, sqlQuery, qwait)
+				if rows != nil {
+					var b int
+					var n string
+					for rows.Next() {
+						if rows.Scan(&b, &n) == nil {
+							if len(n) != blobSize {
+								t.Fatal("mismatch in read buffer")
+							}
+						}
+					}
+					rows.Close()
+				}
+			}()
+		}
+		wg.Wait()
 	})
 }
