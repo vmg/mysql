@@ -2939,3 +2939,60 @@ func TestValuerWithValueReceiverGivenNilValue(t *testing.T) {
 		// This test will panic on the INSERT if ConvertValue() does not check for typed nil before calling Value()
 	})
 }
+
+// TestRawBytesAreNotModified checks for a race condition that arises when a query context
+// is canceled while a user is calling rows.Scan. This is a more stringent test than the one
+// proposed in https://github.com/golang/go/issues/23519. Here we're explicitly closing the
+// context ourselves (instead of letting the query timeout) and using `sql.RawBytes` to check
+// the contents of our internal buffers. In theory, the `sql.RawBytes` should be invalidated
+// after cancellation, but we can still check them to ensure we never modify the underlying
+// storage.
+func TestRawBytesAreNotModified(t *testing.T) {
+	const blob = "0123456789abcdef"
+	const contextRaceIterations = 10
+	const blobSize = 64 * 1024
+	const insertRows = 64
+
+	largeBlob := strings.Repeat(blob, blobSize/len(blob))
+
+	runTests(t, dsn, func(dbt *DBTest) {
+		dbt.mustExec("CREATE TABLE test (id int, value MEDIUMBLOB) CHARACTER SET utf8")
+		for i := 0; i < insertRows; i++ {
+			dbt.mustExec("INSERT INTO test VALUES (?, ?)", i+1, largeBlob)
+		}
+
+		for i := 0; i < contextRaceIterations; i++ {
+			func() {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+
+				rows, err := dbt.db.QueryContext(ctx, `SELECT id, value FROM test`)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				var b int
+				var raw sql.RawBytes
+				for rows.Next() {
+					if err := rows.Scan(&b, &raw); err != nil {
+						t.Fatal(err)
+					}
+
+					before := string(raw)
+					// Cancelling the query here will invalidate the contents of `raw`, because we're
+					// closing the `Rows` explicitly. We would still like to support this without corrupting
+					// data, however, so we ensure that `raw` remains valid _through close_ to prevent future
+					// regressions
+					cancel()
+					time.Sleep(5 * time.Millisecond)
+					after := string(raw)
+
+					if before != after {
+						t.Fatal("the backing storage for sql.RawBytes has been modified")
+					}
+				}
+				rows.Close()
+			}()
+		}
+	})
+}
