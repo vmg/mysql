@@ -111,6 +111,8 @@ func (rows *mysqlRows) Close() (err error) {
 		return err
 	}
 
+	mc.buf.flip()
+
 	// Remove unread packets from stream
 	if !rows.rs.done {
 		err = mc.readUntilEOF()
