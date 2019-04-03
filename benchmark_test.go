@@ -317,3 +317,57 @@ func BenchmarkExecContext(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkQueryRawBytes benchmarks fetching 100 blobs using sql.RawBytes.
+// "size=" means size of each blobs.
+func BenchmarkQueryRawBytes(b *testing.B) {
+	var sizes []int = []int{4000, 8000, 16000, 32000, 64000, 256000}
+	db := initDB(b,
+		"DROP TABLE IF EXISTS bench_rawbytes",
+		"CREATE TABLE bench_rawbytes (id INT PRIMARY KEY, val LONGBLOB)",
+	)
+	blob := make([]byte, sizes[len(sizes)-1])
+	for i := range blob {
+		blob[i] = 42
+	}
+	for i := 0; i < 100; i++ {
+		_, err := db.Exec("INSERT INTO bench_rawbytes VALUES (?, ?)", i, blob)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+	db.Close()
+
+	for _, s := range sizes {
+		for _, rowCount := range []int{10, 100} {
+			b.Run(fmt.Sprintf("size=%v,rows=%d", s, rowCount), func(b *testing.B) {
+				b.ReportAllocs()
+
+				db := initDB(b)
+				defer db.Close()
+
+				for j := 0; j < b.N; j++ {
+					rows, err := db.Query("SELECT LEFT(val, ?) as v FROM bench_rawbytes", s)
+					if err != nil {
+						b.Fatal(err)
+					}
+					nrows := 0
+					for rows.Next() {
+						var buf sql.RawBytes
+						err := rows.Scan(&buf)
+						if err != nil {
+							b.Fatal(err)
+						}
+						if len(buf) != s {
+							b.Fatalf("size mismatch: expected %v, got %v", s, len(buf))
+						}
+						nrows++
+						if nrows == rowCount {
+							rows.Close()
+						}
+					}
+				}
+			})
+		}
+	}
+}
